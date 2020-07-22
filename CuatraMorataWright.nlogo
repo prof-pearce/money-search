@@ -8,15 +8,17 @@ traders-own
   utility              ; how much I've eaten
   series-payoff        ; how much I've eaten in current series
   max-series-payoff    ; how much I could've eaten in current series
-  no-propensity        ; tendency to not speculate
-  yes-propensity       ; tendency to speculate
+  no-propensities      ; tendency to not speculate on each good
+  yes-propensities     ; tendency to speculate on each good
   ;no-prob             ; probability of not speculating
-  trade-probability    ; probability of speculating
+  trade-probabilities  ; probability of speculating on each good
   regret               ; regret over my speculation choice
   partner              ; my current trade partnerask partner
+  strategies           ; whether or not I'll make speculative trades
   previous-good        ; good offered in last trade attempt
-  yes-payoff           ; payoff if I always trade
-  no-payoff            ; payoff if I never trade
+  yes-payoffs
+  no-payoffs
+  have-traded          ; have I traded this tick
 ]
 
 globals
@@ -25,11 +27,11 @@ globals
    production-cost     ; utility lost from producing one unit
    num-goods           ; number of types of goods & traders
    series              ; series number
-  ; series-utility      ; total utility this series
+   series-utility      ; total utility this series
    sugar-demand        ; demand for sugar
    spice-demand        ; demand for spice
-   money               ; list of # times each good used as money
-   offers              ; list of # times a speculative good was offered
+   money-transactions  ; list of # times each good used as money
+   money-offers        ; list of # times a speculative good was offered
    salt
    sugar
    spice
@@ -47,19 +49,19 @@ to init-model
 
   create-traders num-salt-producers
   [
-    set good-produced salt
+    set good-produced salt  ; I produce salt
     set color green
     init-trader
   ]
   create-traders num-sugar-producers
   [
-    set good-produced sugar
+    set good-produced sugar  ; I produce sugar
     set color red
     init-trader
   ]
   create-traders num-spice-producers
   [
-    set good-produced spice
+    set good-produced spice  ; I produce spice
     set color blue
     init-trader
   ]
@@ -79,8 +81,8 @@ to init-globals
   ;set series-utility 0
   set sugar-demand sugar-share * (1 - salt-demand)
   set spice-demand 1 - salt-demand - sugar-demand
-  set money n-values num-goods [0]
-  set offers n-values num-goods [0]
+  set money-transactions n-values num-goods [0]
+  set money-offers n-values num-goods [0]
   set salt 0
   set sugar 1
   set spice 2
@@ -95,16 +97,17 @@ to init-trader
   set series-payoff 0
   set max-series-payoff 0
   set good-held good-produced
-  set no-propensity 0
-  set yes-propensity 0
-  set trade-probability .5
+  set no-propensities [0 0 0]
+  set yes-propensities [0 0 0]
+  set trade-probabilities [0.5 0.5 0.5]
   ;set no-prob .5
-  ;set regret 1
-  set regret payoff-sensitivity
+  set regret 1
   set shape "Person"
   set partner nobody
-  set yes-payoff 0
-  set no-payoff 0
+  set strategies [true true true]  ; start out speculating wildly for all goods
+  set yes-payoffs [0 0 0]
+  set no-payoffs [0 0 0]
+  set have-traded false
   set previous-good good-produced
 end
 
@@ -112,50 +115,77 @@ end
 ; updaters
 ;============================
 
+
 to update-model
   update-globals
-  ifelse trade-cycle-probability < random-float 1
+  ifelse beta < random-float 1
   [
-    ; begin a new series
     set series series + 1
     ask traders [reset-trader]
   ]
   [
-    ask traders [update-desire]       ; taste shock
-    ask traders [update-partner]      ; pair-up
-    ask traders [enter-market]        ; try to trade
-    ask traders [set partner nobody]  ; unpair
+    ask traders [set have-traded false]
+    ask traders [update-desire]         ; taste shock
+    ask traders [update-partner]        ; pair-up
+    ask traders [enter-market]          ; try to trade
+    ask traders [set partner nobody]    ; unpair
     tick
     clear-links
   ]
 end
+
 
 to update-globals
   set sugar-demand sugar-share * (1 - salt-demand)
   set spice-demand 1 - salt-demand - sugar-demand
 end
 
+to update-partner
+  if partner = nobody
+  [
+    set partner one-of other traders
+    if partner != nobody
+    [
+      ask partner [set partner myself]
+    ]
+  ]
+end
+
 to reset-trader
   set good-held good-produced
-  set no-propensity (1 - weight) * no-propensity + weight * no-payoff
-  set yes-propensity (1 - weight) * yes-propensity + weight * yes-payoff
+  let i 0
+  while [i < num-goods]
+  [
+    ifelse item i strategies
+    [
+      set yes-propensities replace-item i yes-propensities ( (1 - weight) * (item i yes-propensities) + weight * (item i yes-payoffs) )
+    ]
+    [
+      set no-propensities replace-item i no-propensities ( (1 - weight) * (item i no-propensities) + weight * (item i no-payoffs) )
+    ]
+    set i i + 1
+  ]
   ; set regret (1 - weight) * regret + weight * (max-series-payoff - series-payoff)
-  ;set regret (1 - weight) * regret + weight * abs(max (list yes-payoff no-payoff) - series-payoff)
-  ;set regret 1  ; no regret, for now
+  set regret 1
   set utility utility + series-payoff
   set series-payoff 0
   set max-series-payoff 0
-  set yes-payoff 0
-  set no-payoff 0
+  set yes-payoffs [0 0 0]
+  set no-payoffs [0 0 0]
   set previous-good good-produced
-  let exp-no  exp (payoff-sensitivity * no-propensity / regret)
-  let exp-yes exp (payoff-sensitivity * yes-propensity / regret)
-  let den exp-no + exp-yes
-  set trade-probability exp-yes / den
-  ;set trade-probability 1 - exp-yes / den
+  set i 0
+  while [i < num-goods]
+  [
+    let exp-no  exp (lambda * (item i no-propensities) / regret)
+    let exp-yes exp (lambda * (item i yes-propensities) / regret)
+    let den exp-no + exp-yes
+    ;set no-prob exp-no / den ; needed?
+    set trade-probabilities replace-item i trade-probabilities (exp-yes / den)
+    set strategies replace-item i strategies (random-float 1.0 < item i trade-probabilities)
+    set i i + 1
+  ]
 end
 
-; taste shock
 to update-desire
   let chance random-float 1
   ifelse chance < salt-demand
@@ -174,47 +204,57 @@ to update-desire
   if good-desired = good-held [consume-or-hold]
 end
 
-; pair self with other and vice-versa
-to update-partner
-  if partner = nobody
-  [
-    set partner one-of other traders with [partner = nobody]
-    ifelse partner != nobody
-    [
-      ask partner [set partner myself]
-    ]
-    [
-      set partner nobody ; couldn't find a partner
-    ]
-  ]
-end
-
 to enter-market
-  if partner != nobody
+  if partner != nobody and not (have-traded or [have-traded] of partner)  ; make sure I'm matched up and neither trader has traded or consumed their good
   [
     let my-good good-held
     let partner-good [good-held] of partner
     let partner-will-trade [will-trade? my-good] of partner
     let I-will-trade will-trade? partner-good
+    if I-will-trade and my-good != [good-desired] of partner and partner-good != [good-desired] of partner
+    [
+      set money-offers replace-item my-good money-offers (1 + item my-good money-offers)
+    ]
     if partner-will-trade
     [
-      update-yes-payoff
-      update-no-payoff
-      if I-will-trade [trade]
+      if partner-good != good-desired and my-good != good-desired
+      [
+        set money-offers replace-item partner-good money-offers (1 + item partner-good money-offers)
+      ]
+      update-yes-payoffs
+      update-no-payoffs
+      if I-will-trade [
+        ask partner
+        [
+         update-yes-payoffs
+         update-no-payoffs
+        ]
+        if not (partner-good = good-desired)  ; I'm not accepting this just to eat, I'm accepting it as money
+        [
+          set money-transactions replace-item partner-good money-transactions (1 + item partner-good money-transactions)
+        ]
+        if not (good-held = [good-desired] of partner)  ; Partner's not accepting this just to eat, they're accepting it as money
+        [
+           set money-transactions replace-item good-held money-transactions (1 + item good-held money-transactions)
+        ]
+        trade
+      ]
+      set have-traded true
+      ask partner [set have-traded true]
     ]
   ]
 end
 
-; what if I never speculate
-to update-no-payoff
+;I only trade for my desired good
+to update-no-payoffs
   if partner != nobody and good-desired = [good-held] of partner
   [
-    set no-payoff no-payoff + marginal-utility
+    set no-payoffs replace-item good-desired no-payoffs (item good-desired no-payoffs + marginal-utility)
   ]
 end
 
-;what if I always speculate
-to update-yes-payoff
+
+to update-yes-payoffs
   if partner != nobody
   [
     let partner-good [good-held] of partner
@@ -222,31 +262,28 @@ to update-yes-payoff
     let would-have-traded [will-trade? previous-good] of partner
     if partner-good = good-desired or would-have-traded
     [
-      set yes-payoff yes-payoff + marginal-utility
+      set yes-payoffs replace-item good-desired yes-payoffs (item good-desired yes-payoffs + marginal-utility)
     ]
   ]
 end
 
-to-report will-trade? [offered-good]
+to-report will-trade? [candidate-good]
   if good-desired = previous-good
   [
-    set max-series-payoff max-series-payoff + 1 ; needed for regret
+    set max-series-payoff max-series-payoff + 1
   ]
-  set previous-good offered-good
-  ifelse offered-good = good-held or offered-good = good-produced
+  set previous-good candidate-good
+  ifelse candidate-good = good-held
   [
-    report false ; why bother?
+    report false
   ]
   [
-    ifelse offered-good = good-desired
+    ifelse candidate-good = good-desired
     [
       report true
     ]
     [
-      ; a non-consumable good was offered to me
-      set offers replace-item offered-good offers (1 + item offered-good offers)
-      ; maybe I'll take it
-      report random-float 1 <= trade-probability
+      report item candidate-good strategies
     ]
   ]
 end
@@ -262,21 +299,20 @@ to trade
   ]
 end
 
-; change name?
 to consume-or-hold
   ifelse good-held = good-desired
   [
     set series-payoff series-payoff + marginal-utility - production-cost
     set good-held good-produced
+    set have-traded true
   ]
   [
-    ; I'm holding good as money
-    set money replace-item good-held money (1 + item good-held money)
+    ; just hold the good for now...
   ]
 end
 
 ;===========================
-; metrics, utilities, etc.
+; reporters, etc.
 ;===========================
 
 to-report total-utility [trader-type]
@@ -285,9 +321,23 @@ to-report total-utility [trader-type]
   report util ; / count traders with [good-produced = trader-type]
 end
 
+;to-report mean-utility [trader-type]
+;  let mean-util 0
+;  ask traders with [good-produced = trader-type] [set mean-util mean-util + utility]
+;  report mean-util
+;end
+
+to-report mean-prob [good]
+  if count traders = 0 [report 0]
+  let result 0
+  ask traders [set result result + item good trade-probabilities]
+  set result result / count traders
+  report result
+end
+
 to-report moneyness [good]
-  let num-offers item good offers
-  let num-accepts item good money
+  let num-offers item good money-offers
+  let num-accepts item good money-transactions
   report ifelse-value num-offers = 0 [0] [num-accepts / num-offers]
 end
 
@@ -384,7 +434,7 @@ num-salt-producers
 0
 30
 10.0
-2
+1
 1
 NIL
 HORIZONTAL
@@ -399,7 +449,7 @@ num-sugar-producers
 0
 30
 10.0
-2
+1
 1
 NIL
 HORIZONTAL
@@ -414,7 +464,7 @@ num-spice-producers
 0
 30
 10.0
-2
+1
 1
 NIL
 HORIZONTAL
@@ -431,10 +481,10 @@ series
 11
 
 SLIDER
-18
-320
-190
-353
+22
+230
+194
+263
 weight
 weight
 0
@@ -446,27 +496,27 @@ NIL
 HORIZONTAL
 
 SLIDER
-16
-363
-195
-396
-trade-cycle-probability
-trade-cycle-probability
+20
+273
+192
+306
+beta
+beta
 0
 1
-0.88
+0.95
 .01
 1
 NIL
 HORIZONTAL
 
 SLIDER
-17
-411
-189
-444
-payoff-sensitivity
-payoff-sensitivity
+21
+321
+193
+354
+lambda
+lambda
 0
 10
 2.7
@@ -476,30 +526,30 @@ NIL
 HORIZONTAL
 
 SLIDER
-18
-227
-190
-260
+20
+369
+192
+402
 salt-demand
 salt-demand
 0
 1
-0.73
+0.7
 .01
 1
 NIL
 HORIZONTAL
 
 SLIDER
-16
-272
-188
-305
+18
+417
+190
+450
 sugar-share
 sugar-share
 0
 1
-0.0
+0.5
 .01
 1
 NIL
@@ -512,7 +562,7 @@ PLOT
 238
 total utility
 ticks
-mean util
+total util
 0.0
 100.0
 0.0
@@ -541,9 +591,29 @@ true
 true
 "" ""
 PENS
-"salt" 1.0 0 -11085214 true "set money n-values 3 [0]\nset offers n-values 3 [0]" "plot moneyness 0"
-"sugar" 1.0 0 -2674135 true "set money n-values 3 [0]\nset offers n-values 3 [0]" "plot moneyness 1"
-"spice" 1.0 0 -11033397 true "set money n-values 3 [0]\nset offers n-values 3 [0]" "plot moneyness 2"
+"salt" 1.0 0 -11085214 true "set money n-values 3 [0]" "plot moneyness 0"
+"sugar" 1.0 0 -2674135 true "set money n-values 3 [0]" "plot moneyness 1"
+"spice" 1.0 0 -11033397 true "set money n-values 3 [0]" "plot moneyness 2"
+
+PLOT
+667
+475
+942
+625
+Avg Trade Probabilities
+ticks
+props
+0.0
+10.0
+0.0
+1.0
+true
+true
+"" ""
+PENS
+"salt" 1.0 0 -10899396 true "" "plot mean-prob 0"
+"sugar" 1.0 0 -2674135 true "" "plot mean-prob 1"
+"spice" 1.0 0 -13791810 true "" "plot mean-prob 2"
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -555,18 +625,17 @@ PENS
 
 There are three types of goods: salt, sugar, and spice.
 
-There are three types of traders: salt-producers (green), sugar-producers (red), and spice-producers (blue).
+There are three types of traders: salt-producers (red), sugar-producers (green), and spice-producers (blue).
 
-At any time a trader holds a good and desires a good. (A trader never holds the good he desires. Instead he consumes it immediately and replaces it with the good he produces.)
+A trader holds a good and desires a good. (A trader never holds the good he desires. Instead he consumes it immediately and replaces it with the good he produces.)
 
 There are two types of update cycles: reset cycles and trade cycles. Beta is the probability that a cycle will be a trade cycle. Thus, a simulation consists of series of trade cycles interrupted by reset cycles.
 
 ### Trade Cycles
 
-During a trade cycle each trader receives a taste shock that determines the good he desires during that cycle. (The probability of the good desired is set by the user.)
-If the trader is lucky enough to desire the good he holds, he consumes it and replaces it with the good he produces. He then bows out of the trading for the cycle. The remaining traders are randomly paired.
+During a trade cycle traders are randomly paired. Each receives a taste shock which determines the good they desire. (The probability of the taste shock is set by the user.)
 
-Assume A and B are paired, If A will trade for the good held by B and vice-versa, then a trade is made. If A receives the good he desires, then he consumes the good, increments his utility, and replaces it with the good he produces. Otherwise he holds the received good, hoping to trade it for a desired good later in the series.
+Assume A and B are paired, If A will trade for the good held by B and vice-versa, then a trade is made. If A receives the good he desires, then he consumes the good, increments his utility, and replaces it with the good he produces. Otherwise he holds the received good.
 
 Traders are unpaired at the end of the cycle.
 
@@ -574,15 +643,13 @@ Traders are unpaired at the end of the cycle.
 
 If B holds the good desired by A, then A will agree to trade. If B holds the good held by or produced by A, then A will not agree to trade. Why bother? Otherwise, B holds a good A neither produces or desires. In this case A will agree to trade with probability P. B uses the same decision-making procedure.
 
-For example, if A is a salt producer who currently desires sugar but holds salt, and A's partner, B, holds spice, then A will agree to trade his salt for B's spice with probability P. Of course the trade only happens if B also agrees to it. Of course if A held spice, he would not trade for B's spice. Nor would A agree to trade if B held salt since A can make his own salt.
-
 ### Reset Cycles
 
 A reset cycle marks the start of a new series of market cycles. During a reset cycle a trader updates his trade probability. 
 
 #### Updating Trade Probability
 
-A keeps track of the total payoffs he would have received in the last market cycle series if his trade probability was 1 (always trade for a non-consumable, non-producable good) and if his trade probability was 0 (never trade for a non-consumable, non-producable good). The trade probability increases if always-trade is more than never-trade, otherwise it decreases.
+A keeps track of the total payoffs he would have received in the current market cycle series if his trade probability was 1 (always trade for a non-consumable, non-producable good) and if his trade probability was 0 (never trade for a non-consumable, non-producable good). The trade probability increases if always-trade is more than never-trade, otherwise it decreases.
 
 
 ## HOW TO USE IT
